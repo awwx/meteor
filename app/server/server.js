@@ -89,6 +89,7 @@ var run = function () {
   var info_raw =
     fs.readFileSync(path.join(bundle_dir, 'app.json'), 'utf8');
   var info = JSON.parse(info_raw);
+  var bundler = {app_info: info, bundle_dir: bundle_dir};
 
   // unique id for this instantiation of the server. If this changes
   // between client reconnects, the client will reload. You can set the
@@ -99,8 +100,16 @@ var run = function () {
   var server_id = process.env.SERVER_ID || info.bundle_id;
 
   // start up app
-  __meteor_bootstrap__ = {require: require, startup_hooks: [], app: app, app_info: info};
+
+  __meteor_bootstrap__ = {
+    require: require,
+    startup_hooks: [],
+    app: app,
+    bundler: bundler
+  };
+
   __meteor_runtime_config__ = {server_id: server_id};
+
   Fiber(function () {
     // (put in a fiber to let Meteor.db operations happen during loading)
 
