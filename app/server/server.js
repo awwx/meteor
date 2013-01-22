@@ -99,7 +99,7 @@ var run = function () {
   var server_id = process.env.SERVER_ID || info.bundle_id;
 
   // start up app
-  __meteor_bootstrap__ = {require: require, startup_hooks: [], app: app};
+  __meteor_bootstrap__ = {require: require, startup_hooks: [], app: app, app_info: info};
   __meteor_runtime_config__ = {server_id: server_id};
   Fiber(function () {
     // (put in a fiber to let Meteor.db operations happen during loading)
