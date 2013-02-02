@@ -493,10 +493,13 @@ _.extend(Bundle.prototype, {
 
     // --- Static assets ---
 
+    var static_urls = [];
+
     if (is_app) {
       if (fs.existsSync(path.join(project_dir, 'public'))) {
-        files.cp_r(path.join(project_dir, 'public'),
-                   path.join(build_path, 'static'), {ignore: ignore_files});
+        static_urls =
+          files.cp_r(path.join(project_dir, 'public'),
+                     path.join(build_path, 'static'), {ignore: ignore_files});
       }
       dependencies_json.app.push('public');
     }
@@ -574,6 +577,12 @@ _.extend(Bundle.prototype, {
 "Find out more about Meteor at meteor.com.\n");
 
     // --- Metadata ---
+
+    app_json.urls = _.union(
+      self.js.client,
+      self.css,
+      static_urls
+    );
 
     dependencies_json.extensions = self._app_extensions();
     dependencies_json.exclude = _.pluck(ignore_files, 'source');
