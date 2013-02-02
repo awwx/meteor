@@ -294,9 +294,15 @@ var files = module.exports = {
   // If options.ignore is present, it should be a list of regexps. Any
   // file whose basename matches one of the regexps, before
   // transformation, will be skipped.
+  //
+  // So that we know which files were copied (given the possible name
+  // transformations and ignored files), return a list of relative
+  // URLs (*not* an os-specific file path) of the files placed in the
+  // "to" directory.
   cp_r: function (from, to, options) {
     options = options || {};
     files.mkdir_p(to, 0755);
+    var urls = [];
     _.each(fs.readdirSync(from), function (f) {
       if (_.any(options.ignore || [], function (pattern) {
         return f.match(pattern);
@@ -306,8 +312,10 @@ var files = module.exports = {
       if (options.transform_filename)
         f = options.transform_filename(f);
       var full_to = path.join(to, f);
-      if (fs.statSync(full_from).isDirectory())
-        files.cp_r(full_from, full_to, options);
+      if (fs.statSync(full_from).isDirectory()) {
+        var subdir_urls = files.cp_r(full_from, full_to, options);
+        urls = urls.concat(_.map(subdir_urls, function (url) { return '/' + f + url; }));
+      }
       else {
         if (!options.transform_contents) {
           // XXX reads full file into memory.. lame.
@@ -317,8 +325,10 @@ var files = module.exports = {
           contents = options.transform_contents(contents, f);
           fs.writeFileSync(full_to, contents);
         }
+        urls.push('/' + f);
       }
     });
+    return urls;
   },
 
   // Make a temporary directory. Returns the path to the newly created
