@@ -138,9 +138,15 @@ var run = function () {
         return;
       }
 
+      var manifest_attribute =
+        Meteor._app_cache_manifest_hook
+        && Meteor._app_cache_manifest_hook(req)
+        || '';
+      var app_html2 = app_html.replace('##MANIFEST##', manifest_attribute);
+
       res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
       if (supported_browser(req.headers['user-agent']))
-        res.write(app_html);
+        res.write(app_html2);
       else
         res.write(unsupported_html);
       res.end();
