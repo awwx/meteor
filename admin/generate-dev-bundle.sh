@@ -3,7 +3,7 @@
 set -e
 set -u
 
-BUNDLE_VERSION=0.2.16
+BUNDLE_VERSION=0.2.18
 UNAME=$(uname)
 ARCH=$(uname -m)
 
@@ -78,7 +78,6 @@ which npm
 
 cd "$DIR/lib/node_modules"
 npm install connect@1.9.2 # not 2.x yet. sockjs doesn't work w/ new connect
-npm install gzippo@0.1.7
 npm install optimist@0.3.5
 npm install coffee-script@1.4.0
 npm install less@1.3.3
@@ -89,7 +88,7 @@ npm install semver@1.1.0
 npm install handlebars@1.0.7
 npm install mongodb@1.1.11
 npm install clean-css@0.8.3
-npm install useragent@1.1.0
+npm install useragent@2.0.1
 npm install request@2.12.0
 npm install simplesmtp@0.1.25
 npm install stream-buffers@0.2.3
@@ -100,6 +99,10 @@ npm install underscore@1.4.2
 npm install fstream@0.1.21
 npm install tar@0.1.14
 npm install websocket@1.0.8
+
+# allow clientMaxAge to be set to 0:
+# https://github.com/tomgco/gzippo/pull/49
+npm install https://github.com/meteor/gzippo/tarball/1e4b955439
 
 # uglify-js has a bug which drops 'undefined' in arrays:
 # https://github.com/mishoo/UglifyJS2/pull/97
