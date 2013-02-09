@@ -131,21 +131,10 @@ var run = function () {
 
     app_html = runtime_config(app_html);
 
-    app.use(function (req, res) {
-      // prevent these URLs from returning app_html
-      //
-      // NOTE: app.manifest is not a web standard like favicon.ico and
-      // robots.txt. It is a file name we have chosen to use for HTML5
-      // appcache URLs. It is included here to prevent using an appcache
-      // then removing it from poisoning an app permanently. Eventually,
-      // once we have server side routing, this won't be needed as
-      // unknown URLs with return a 404 automatically.
-      if (_.indexOf(['/app.manifest', '/favicon.ico', '/robots.txt'], req.url)
-          !== -1) {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
+    app.use(function (req, res, next) {
+      if (! (req.url === '/' ||
+             (Meteor._routePolicy && Meteor._routePolicy.classify(req.url) === 'app')))
+        return next();
 
       res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
       if (supported_browser(req.headers['user-agent']))
@@ -153,6 +142,13 @@ var run = function () {
       else
         res.write(unsupported_html);
       res.end();
+    });
+
+    // return a "404 Not Found" if no route matches the request URL.
+    app.use(function (req, res) {
+      res.writeHead(404);
+      res.end();
+      return;
     });
 
     // run the user startup hooks.
