@@ -25,11 +25,16 @@ Weibo.requestCredential = function (options, credentialRequestCompleteCallback) 
         'https://api.weibo.com/oauth2/authorize' +
         '?response_type=code' +
         '&client_id=' + config.clientId +
-        '&redirect_uri=' + Meteor.absoluteUrl('_oauth/weibo?close', {replaceLocalhost: true}) +
+        // XXX untested
+        '&redirect_uri=' + OAuth._redirectUri('weibo', config, null, {replaceLocalhost: true}) +
         '&state=' + credentialToken;
 
-  OAuth.showPopup(
-    loginUrl,
-    _.bind(credentialRequestCompleteCallback, null, credentialToken)
-  );
+  // XXX this is untested
+  OAuth.launchLogin({
+    loginService: "weibo",
+    loginStyle: loginStyle,
+    loginUrl: loginUrl,
+    credentialRequestCompleteCallback: credentialRequestCompleteCallback,
+    credentialToken: credentialToken
+  });
 };

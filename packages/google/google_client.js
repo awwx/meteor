@@ -35,14 +35,14 @@ Google.requestCredential = function (options, credentialRequestCompleteCallback)
   var accessType = options.requestOfflineToken ? 'offline' : 'online';
   var approvalPrompt = options.forceApprovalPrompt ? 'force' : 'auto';
 
-  var loginStyle = OAuth._loginStyle('google', config);
+  var loginStyle = OAuth._loginStyle('google', config, options);
 
   var loginUrl =
         'https://accounts.google.com/o/oauth2/auth' +
         '?response_type=code' +
         '&client_id=' + config.clientId +
         '&scope=' + flatScope +
-        '&redirect_uri=' + Meteor.absoluteUrl('_oauth/google?close') +
+        '&redirect_uri=' + OAuth._redirectUri('google', config) +
         '&state=' + OAuth._stateParam(loginStyle, credentialToken) +
         '&access_type=' + accessType +
         '&approval_prompt=' + approvalPrompt;
@@ -56,10 +56,12 @@ Google.requestCredential = function (options, credentialRequestCompleteCallback)
     loginUrl += '&hd=' + encodeURIComponent(Accounts._options.restrictCreationByEmailDomain);
   }
 
-  OAuth.launchLogin(
-    loginStyle,
-    loginUrl,
-    credentialRequestCompleteCallback,
-    credentialToken,
-    { height: 406 });
+  OAuth.launchLogin({
+    loginService: "google",
+    loginStyle: loginStyle,
+    loginUrl: loginUrl,
+    credentialRequestCompleteCallback: credentialRequestCompleteCallback,
+    credentialToken: credentialToken,
+    popupOptions: { height: 406 }
+  });
 };

@@ -14,10 +14,7 @@ OAuth._requestHandlers['1'] = function (service, query, res) {
 
   if (query.requestTokenAndRedirect) {
     // step 1 - get and store a request token
-    var callbackUrl = Meteor.absoluteUrl(
-      "_oauth/" + service.serviceName +
-      "?close" +
-      "&state=" + encodeURIComponent(query.state));
+    var callbackUrl = OAuth._redirectUri(service.serviceName, config, {state: query.state});
 
     // Get a request token to start auth process
     oauthBinding.prepareRequestToken(callbackUrl);

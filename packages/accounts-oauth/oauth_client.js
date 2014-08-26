@@ -8,19 +8,6 @@ var convertError = function (err) {
     return err;
 };
 
-// Called when the redirect login flow is complete, either
-// successfully or with an error.
-//
-// TODO this needs to report back to code which initiated the login.
-// (For example, accounts-ui closes the login dialog on success and
-// displays the error on failure).
-
-var redirectComplete = function (err) {
-  if (err)
-    Meteor._debug("login failure", err);
-  else
-    Meteor._debug("login success");
-};
 
 // For the redirect login flow, the final step is that we're
 // redirected back to the application.  The credentialToken for this
@@ -37,10 +24,24 @@ Meteor.startup(function () {
   // successfully.  However we still call the login method anyway to
   // retrieve the error if the login was unsuccessful.
 
+  var methodName = 'login';
+  var methodArguments = [{oauth: _.pick(oauth, 'credentialToken', 'credentialSecret')}];
+
   Accounts.callLoginMethod({
-    methodArguments: [{oauth: oauth}],
+    methodArguments: methodArguments,
     userCallback: function (err) {
-      redirectComplete(convertError(err));
+      // The redirect login flow is complete.  Construct an
+      // `attemptInfo` object with the login result, and report back
+      // to the code which initiated the login attempt
+      // (e.g. accounts-ui, when that package is being used).
+      err = convertError(err);
+      Accounts._pageLoadLogin({
+        type: oauth.loginService,
+        allowed: !err,
+        error: err,
+        methodName: methodName,
+        methodArguments: methodArguments
+      });
     }
   });
 });

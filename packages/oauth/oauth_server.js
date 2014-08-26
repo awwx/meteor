@@ -58,7 +58,7 @@ OAuth.retrieveCredential = function(credentialToken, credentialSecret) {
 //
 OAuth._generateState = function (loginStyle, credentialToken, redirectUrl) {
   return new Buffer(JSON.stringify({
-    loginStyle: 'loginStyle',
+    loginStyle: loginStyle,
     credentialToken: credentialToken,
     redirectUrl: redirectUrl})).toString('base64');
 };
@@ -158,8 +158,13 @@ OAuthTest.middleware = middleware;
 // @returns {String|null} e.g. "facebook", or null if this isn't an
 // oauth request
 var oauthServiceName = function (req) {
-  // req.url will be "/_oauth/<service name>?<action>"
-  var barePath = req.url.substring(0, req.url.indexOf('?'));
+  // req.url will be "/_oauth/<service name>" with an optional "?close".
+  var i = req.url.indexOf('?');
+  var barePath;
+  if (i === -1)
+    barePath = req.url;
+  else
+    barePath = req.url.substring(0, i);
   var splitPath = barePath.split('/');
 
   // Any non-oauth request will continue down the default

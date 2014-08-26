@@ -14,6 +14,7 @@ Package.on_use(function (api) {
   api.use('oauth-encryption', 'server', {weak: true});
 
   api.use('localstorage');
+  api.use('url');
 
   api.export('OAuth');
   api.export('OAuthTest', 'server', {testOnly: true});
