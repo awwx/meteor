@@ -14,7 +14,6 @@ var auth = require('./auth.js');
 var utils = require('./utils.js');
 var _ = require('underscore');
 var Future = require('fibers/future');
-var project = require('./project.js');
 var stats = require('./stats.js');
 
 // Make a synchronous RPC to the "classic" MDG deploy API. The deploy
@@ -398,10 +397,10 @@ var bundleAndDeploy = function (options) {
 
     if (options.recordPackageUsage) {
       var statsMessages = buildmessage.capture(function () {
-        stats.recordPackages(options.appDir);
+        stats.recordPackages("sdk.deploy", site);
       });
       if (statsMessages.hasMessages()) {
-        process.stdout.write("Error talking to stats server:\n" +
+        process.stdout.write("Error recording package list:\n" +
                              statsMessages.formatMessages());
         // ... but continue;
       }
@@ -760,6 +759,7 @@ var listSites = function () {
       ! result.payload.sites.length) {
     process.stdout.write("You don't have any sites yet.\n");
   } else {
+    result.payload.sites.sort();
     _.each(result.payload.sites, function (site) {
       process.stdout.write(site + "\n");
     });

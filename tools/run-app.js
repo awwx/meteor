@@ -12,7 +12,6 @@ var release = require('./release.js');
 var buildmessage = require('./buildmessage.js');
 var runLog = require('./run-log.js');
 var catalog = require('./catalog.js');
-var packageCache = require('./package-cache.js');
 var stats = require('./stats.js');
 
 // Parse out s as if it were a bash command line.
@@ -397,7 +396,22 @@ _.extend(AppRunner.prototype, {
     // tell the catalog to reload local package sources (since their
     // dependencies may have changed), and then we should recompute the project
     // constraints.
-    catalog.complete.refresh({ forceRefresh: true });
+    // XXX the catalog refresh seems overly conservative, but who knows
+    var refreshWatchSet = new watch.WatchSet;
+    var refreshMessages = buildmessage.capture(function () {
+      catalog.complete.refresh({ forceRefresh: true,
+                                 watchSet: refreshWatchSet});
+    });
+    if (refreshMessages.hasMessages()) {
+      return {
+        outcome: 'bundle-fail',
+        bundleResult: {
+          errors: refreshMessages,
+          serverWatchSet: refreshWatchSet
+        }
+      };
+    }
+
     project.reload();
 
     runLog.clearLog();
@@ -411,21 +425,32 @@ _.extend(AppRunner.prototype, {
     // release.current), but we still want to detect the mismatch if
     // you are testing packages from an app and you 'meteor update'
     // that app.
-    if (self.appDirForVersionCheck &&
-        ! release.usingRightReleaseForApp()) {
-      return { outcome: 'wrong-release',
-               releaseNeeded:
-               project.getMeteorReleaseVersion() };
+    if (self.appDirForVersionCheck) {
+      var wrongRelease;
+      var rightReleaseMessages = buildmessage.capture(function () {
+        wrongRelease = ! release.usingRightReleaseForApp();
+      });
+      if (rightReleaseMessages.hasMessages()) {
+        return {
+          outcome: 'bundle-fail',
+          bundleResult: { errors: rightReleaseMessages }
+        };
+      }
+      if (wrongRelease) {
+        return { outcome: 'wrong-release',
+                 releaseNeeded: project.getMeteorReleaseVersion()
+               };
+      }
     }
 
     // Bundle up the app
     var bundlePath = path.join(self.appDir, '.meteor', 'local', 'build');
     if (self.recordPackageUsage) {
       var statsMessages = buildmessage.capture(function () {
-        stats.recordPackages(self.appDir);
+        stats.recordPackages("sdk.run");
       });
       if (statsMessages.hasMessages()) {
-        process.stdout.write("Error talking to stats server:\n" +
+        process.stdout.write("Error recording package list:\n" +
                              statsMessages.formatMessages());
         // ... but continue;
       }
@@ -435,8 +460,11 @@ _.extend(AppRunner.prototype, {
     // a single invocation of _runOnce().
     var cachedServerWatchSet;
     var bundleApp = function () {
-      if (! self.firstRun)
-        packageCache.packageCache.refresh(true); // pick up changes to packages
+      if (! self.firstRun) {
+        // Pick up changes to packages. (Soft refresh, so we still check to see
+        // if they have changed.)
+        catalog.complete.packageCache.refresh(true);
+      }
 
       var bundle = bundler.bundle({
         outputPath: bundlePath,
@@ -583,15 +611,18 @@ _.extend(AppRunner.prototype, {
           };
         }
 
-        // Establish a watcher on the new files.
-        setupClientWatcher();
+        var oldFuture = self.runFuture = new Future;
 
         // Notify the server that new client assets have been added to the build.
         process.kill(appProcess.proc.pid, 'SIGUSR2');
+
+        // Establish a watcher on the new files.
+        setupClientWatcher();
+
         runLog.logClientRestart();
 
-        self.runFuture = new Future;
-        ret = self.runFuture.wait();
+        // Wait until another file changes.
+        ret = oldFuture.wait();
       }
     } finally {
       self.runFuture = null;
@@ -698,8 +729,10 @@ _.extend(AppRunner.prototype, {
         self.watchFuture = new Future;
 
         var watchSet = new watch.WatchSet();
-        watchSet.merge(runResult.bundleResult.serverWatchSet);
-        watchSet.merge(runResult.bundleResult.clientWatchSet);
+        if (runResult.bundleResult.serverWatchSet)
+          watchSet.merge(runResult.bundleResult.serverWatchSet);
+        if (runResult.bundleResult.clientWatchSet)
+          watchSet.merge(runResult.bundleResult.clientWatchSet);
         var watcher = new watch.Watcher({
           watchSet: watchSet,
           onChange: function () {

@@ -22,7 +22,9 @@ ConstraintSolver.PackagesResolver = function (catalog, options) {
   self.catalog = catalog;
 
   // The main resolver
-  self.resolver = new ConstraintSolver.Resolver();
+  self.resolver = new ConstraintSolver.Resolver({
+    nudge: options.nudge
+  });
 
   self._packageInfoLoadQueue = [];
   self._packagesEverEnqueued = {};
@@ -57,19 +59,20 @@ ConstraintSolver.PackagesResolver.prototype._ensurePackageInfoLoaded = function 
 ConstraintSolver.PackagesResolver.prototype._loadPackageInfo = function (
     packageName) {
   var self = this;
-  // XXX is sortedness actually relevant? is there a minor optimization here
-  //     where we can only talk to self.catalog once?
+
+  // XXX in theory there might be different archs but in practice they are
+  // always "os", "web.browser" and "web.cordova". Fix this once we
+  // actually have different archs used.
+  var allArchs = ["os", "web.browser", "web.cordova"];
+
+  // We rely on sortedness in the constraint solver, since one of the cost
+  // functions wants to be able to quickly find the earliest or latest version.
   var sortedVersions = self.catalog.getSortedVersions(packageName);
-  // XXX throw error if the package doesn't exist?
   _.each(sortedVersions, function (version) {
     var versionDef = self.catalog.getVersion(packageName, version);
 
     var unibuilds = {};
 
-    // XXX in theory there might be different archs but in practice they are
-    // always "os", "web.browser" and "web.cordova". Fix this once we
-    // actually have different archs used.
-    var allArchs = ["os", "web.browser", "web.cordova"];
     _.each(allArchs, function (arch) {
       var unitName = packageName + "#" + arch;
       unibuilds[unitName] = new ConstraintSolver.UnitVersion(
@@ -121,6 +124,19 @@ ConstraintSolver.PackagesResolver.prototype._loadPackageInfo = function (
       });
     });
   });
+
+  // We need to be aware of the earliestCompatibleVersion values for any
+  // packages that are overridden by local packages, in order to evaluate
+  // 'compatible-with' constraints that name that version.
+  // (Some of the test fixtures don't bother to implement this method.)
+  if (self.catalog.getForgottenECVs) {
+    _.each(self.catalog.getForgottenECVs(packageName), function (ecv, version) {
+      _.each(allArchs, function (arch) {
+        var unitName = packageName + '#' + arch;
+        self.resolver.addExtraECV(unitName, version, ecv);
+      });
+    });
+  }
 };
 
 // dependencies - an array of string names of packages (not slices)
@@ -128,7 +144,6 @@ ConstraintSolver.PackagesResolver.prototype._loadPackageInfo = function (
 //  - packageName - string name
 //  - version - string constraint (ex.: "1.2.3", ">=2.3.4", "=3.3.3")
 // options:
-//  - breaking - set this flag to true if breaking upgrades are allowed
 //  - upgrade - list of dependencies for which upgrade is prioritized higher
 //  than keeping the old version
 //  - previousSolution - mapping from package name to a version that was used in
@@ -140,7 +155,6 @@ ConstraintSolver.PackagesResolver.prototype.resolve = function (
   // clone because we mutate options
   options = _.extend({
     _testing: false,
-    breaking: false,
     upgrade: []
   }, options || {});
 
@@ -153,7 +167,6 @@ ConstraintSolver.PackagesResolver.prototype.resolve = function (
 
   check(options, {
     _testing: Match.Optional(Boolean),
-    breaking: Match.Optional(Boolean),
     upgrade: [String],
     previousSolution: Match.Optional(Object)
   });
@@ -173,7 +186,7 @@ ConstraintSolver.PackagesResolver.prototype.resolve = function (
   // have been undefineds?
   if (options.previousSolution) {
     options.previousSolution = _.filter(_.flatten(_.map(options.previousSolution, function (version, packageName) {
-      return _.map(self._unibuildsForPackage(packageName, true), function (unitName) {
+      return _.map(self._unibuildsForPackage(packageName), function (unitName) {
         return self.resolver._unitsVersionsMap[unitName + "@" + version];
       });
     })), _.identity);
@@ -182,80 +195,75 @@ ConstraintSolver.PackagesResolver.prototype.resolve = function (
   // split every package name to one or more archs belonging to that package
   // (["foobar"] => ["foobar#os", "foobar#web.browser", ...])
   // XXX for now just hardcode in all of the known architectures
-  options.upgrade = _.filter(_.flatten(_.map(options.upgrade, function (packageName) {
-    return [packageName + "#os", packageName + "#web.browser",
-            packageName + "#web.cordova"];
-  })), _.identity);
+  var upgradeUnibuilds = {};
+  _.each(options.upgrade, function (packageName) {
+    _.each(self._unibuildsForPackage(packageName), function (unibuildName) {
+      upgradeUnibuilds[unibuildName] = true;
+    });
+  });
+  options.upgrade = upgradeUnibuilds;
 
   var dc = self._splitDepsToConstraints(dependencies, constraints);
 
-  // Never allow to downgrade a version of a direct dependency in regards to the
-  // previous solution.
-  // Depending on whether the option `breaking` is set or not, allow only
-  // compatible upgrades or any upgrades.
-  _.each(options.previousSolution, function (uv) {
-    // if not a root dependency, there is no 'no-upgrade' constraint
-    if (! _.contains(dependencies, uv.name))
-      return;
-
-    var constrType = options.breaking ? ">=" : "";
-    dc.constraints.push(
-      self.resolver.getConstraint(uv.name, constrType + uv.version));
-  });
-
   options.rootDependencies = dc.dependencies;
+  var resolverOptions = self._getResolverOptions(options);
 
+  var res = null;
+  // If a previous solution existed, try resolving with additional (weak)
+  // equality constraints on all the versions from the previous solution (except
+  // those we've explicitly been asked to update). If it's possible to solve the
+  // constraints without changing any of the previous versions (though we may
+  // add more choices in addition, or remove some now-unnecessary choices) then
+  // that's our first try.
+  if (!_.isEmpty(options.previousSolution)) {
+    var constraintsWithPreviousSolutionLock = _.clone(dc.constraints);
+    _.each(options.previousSolution, function (uv) {
+      if (!_.has(options.upgrade, uv.name)) {
+        constraintsWithPreviousSolutionLock.push(
+          self.resolver.getConstraint(uv.name, '=' + uv.version));
+      }
+    });
+    try {
+      // Try running the resolver. If it fails to resolve, that's OK, we'll keep
+      // working.
+      res = self.resolver.resolve(
+        dc.dependencies, constraintsWithPreviousSolutionLock, resolverOptions);
+    } catch (e) {
+      if (!(e.constraintSolverError))
+        throw e;
+    }
+  }
 
-  var resolverOptions = self._getResolverOptions(options, dc);
+  if (!res) {
+    // Either we didn't have a previous solution, or it doesn't work. Try again
+    // without locking in the previous solution as strict equality.
 
-  // XXX resolver.resolve can throw an error, should have error handling with
-  // proper error translation.
-  var res = self.resolver.resolve(dc.dependencies, dc.constraints, resolverOptions);
+    res = self.resolver.resolve(
+      dc.dependencies, dc.constraints, resolverOptions);
+  }
 
-  var resultChoices = {};
-  _.each(res, function (uv) {
+  return resolverResultToPackageMap(res);
+};
+
+var removeUnibuild = function (unitName) {
+  return unitName.split('#')[0];
+};
+
+var resolverResultToPackageMap = function (choices) {
+  var packageMap = {};
+  mori.each(choices, function (nameAndUv) {
+    var name = mori.first(nameAndUv);
+    var uv = mori.last(nameAndUv);
     // Since we don't yet define the interface for a an app to depend only on
     // certain unibuilds of the packages (like only web unibuilds) and we know
     // that each unibuild weakly depends on other sibling unibuilds of the same
     // version, we can safely output the whole package for each unibuild in the
     // result.
-    resultChoices[uv.name.split('#')[0]] = uv.version;
+    packageMap[removeUnibuild(name)] = uv.version;
   });
-
-  return resultChoices;
+  return packageMap;
 };
 
-// This method, along with the stopAfterFirstPropagation, are designed for
-// tests; they allow us to test Resolver._propagateExactTransDeps but with an
-// interface that's a little more like PackagesResolver.resolver.
-ConstraintSolver.PackagesResolver.prototype.propagateExactDeps =
-  function (dependencies, constraints) {
-  var self = this;
-
-  check(dependencies, [String]);
-  check(constraints, [{ packageName: String, version: String, type: String }]);
-
-  _.each(dependencies, function (packageName) {
-    self._ensurePackageInfoLoaded(packageName);
-  });
-  _.each(constraints, function (constraint) {
-    self._ensurePackageInfoLoaded(constraint.packageName);
-  });
-
-  var dc = self._splitDepsToConstraints(dependencies, constraints);
-
-  // XXX resolver.resolve can throw an error, should have error handling with
-  // proper error translation.
-  var res = self.resolver.resolve(dc.dependencies, dc.constraints,
-                                  { stopAfterFirstPropagation: true });
-
-  var resultChoices = {};
-  _.each(res, function (uv) {
-    resultChoices[uv.name.split('#')[0]] = uv.version;
-  });
-
-  return resultChoices;
-};
 
 // takes dependencies and constraints and rewrites the names from "foo" to
 // "foo#os" and "foo#web.browser" and "foo#web.cordova"
@@ -273,6 +281,8 @@ ConstraintSolver.PackagesResolver.prototype._splitDepsToConstraints =
   });
 
   _.each(inputConstraints, function (constraint) {
+    if (!semver.valid(constraint.version))
+      throw Error("Bad semver: " + constraint.version);
     var operator = "";
     if (constraint.type === "exactly")
       operator = "=";
@@ -289,25 +299,21 @@ ConstraintSolver.PackagesResolver.prototype._splitDepsToConstraints =
 };
 
 ConstraintSolver.PackagesResolver.prototype._unibuildsForPackage =
-  function (packageName, unknownOk) {
+  function (packageName) {
   var self = this;
   var unibuildPrefix = packageName + "#";
   var unibuilds = [];
   // XXX hardcode all common architectures assuming that every package has the
   // same set of architectures.
   _.each(["os", "web.browser", "web.cordova"], function (arch) {
-    if (self.resolver.unitsVersions[unibuildPrefix + arch])
-      unibuilds.push(unibuildPrefix + arch);
+    unibuilds.push(unibuildPrefix + arch);
   });
-
-  if (_.isEmpty(unibuilds) && !unknownOk)
-    throw new Error("Cannot find anything about package -- " + packageName);
 
   return unibuilds;
 };
 
 ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
-  function (options, dc) {
+  function (options) {
   var self = this;
 
   var semverToNum = function (version) {
@@ -319,10 +325,9 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
 
   if (options._testing) {
     resolverOptions.costFunction = function (state) {
-      var choices = state.choices;
-      return _.reduce(choices, function (sum, uv) {
-        return semverToNum(uv.version) + sum;
-      }, 0);
+      return mori.reduce(mori.sum, 0, mori.map(function (nameAndUv) {
+        return semverToNum(mori.last(nameAndUv).version);
+      }, state.choices));
     };
   } else {
     // Poorman's enum
@@ -338,27 +343,18 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
     // if the upgrade is preferred over preserving previous solution, pretend
     // there are no previous solution
     _.each(prevSol, function (uv) {
-      if (! _.contains(options.upgrade, uv.name))
+      if (! _.has(options.upgrade, uv.name))
         prevSolMapping[uv.name] = uv;
     });
 
     resolverOptions.costFunction = function (state, options) {
       options = options || {};
-      var choices = state.choices;
-      var constraints = state.constraints;
       // very major, major, medium, minor costs
       // XXX maybe these can be calculated lazily?
       var cost = [0, 0, 0, 0];
 
-      var minimalConstraint = {};
-      constraints.each(function (c) {
-        if (! _.has(minimalConstraint, c.name))
-          minimalConstraint[c.name] = c.version;
-        else if (semver.lt(c.version, minimalConstraint[c.name]))
-          minimalConstraint[c.name] = c.version;
-      });
-
-      _.each(choices, function (uv) {
+      mori.each(state.choices, function (nameAndUv) {
+        var uv = mori.last(nameAndUv);
         if (_.has(prevSolMapping, uv.name)) {
           // The package was present in the previous solution
           var prev = prevSolMapping[uv.name];
@@ -387,12 +383,12 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
           } else {
             // transitive dependency
             // prefer to have less changed transitive dependencies
-            cost[MINOR] += versionsDistance === 0 ? 1 : 0;
+            cost[MINOR] += versionsDistance === 0 ? 0 : 1;
             options.debug && console.log("transitive: ", uv.name, prev.version, "=>", uv.version)
           }
         } else {
           var latestDistance =
-            semverToNum(self.resolver._latestVersion[uv.name]) -
+            semverToNum(_.last(self.resolver.unitsVersions[uv.name]).version) -
             semverToNum(uv.version);
 
           if (isRootDep[uv.name]) {
@@ -403,8 +399,10 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
           } else {
             // transitive dependency
             // prefarable earliest possible to be conservative
-            cost[MINOR] += semverToNum(uv.version) -
-              semverToNum(minimalConstraint[uv.name] || "0.0.0");
+            // How far is our choice from the most conservative version that
+            // also matches our constraints?
+            var minimal = state.constraints.getMinimalVersion(uv.name) || '0.0.0';
+            cost[MINOR] += semverToNum(uv.version) - semverToNum(minimal);
             options.debug && console.log("transitive: ", uv.name, "=>", uv.version)
           }
         }
@@ -415,12 +413,11 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
 
     resolverOptions.estimateCostFunction = function (state, options) {
       options = options || {};
-      var dependencies = state.dependencies;
-      var constraints = state.constraints;
 
+      var constraints = state.constraints;
       var cost = [0, 0, 0, 0];
 
-      dependencies.each(function (dep) {
+      state.eachDependency(function (dep, alternatives) {
         // XXX don't try to estimate transitive dependencies
         if (! isRootDep[dep]) {
           cost[MINOR] += 10000000;
@@ -429,33 +426,27 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
 
         if (_.has(prevSolMapping, dep)) {
           var prev = prevSolMapping[dep];
-          var prevVersionMatches =
-            _.isEmpty(constraints.violatedConstraints(prev, self.resolver));
+          var prevVersionMatches = constraints.isSatisfied(prev, self.resolver);
 
           // if it matches, assume we would pick it and the cost doesn't
           // increase
           if (prevVersionMatches)
             return;
 
-          var uv =
-            constraints.earliestMatchingVersionFor(dep, self.resolver);
+          // Get earliest matching version.
+          var earliestMatching = mori.first(alternatives);
 
-          // Cannot find anything compatible
-          if (! uv) {
+          var isCompatible =
+                prev.earliestCompatibleVersion === earliestMatching.earliestCompatibleVersion;
+          if (! isCompatible) {
             cost[VMAJOR]++;
             return;
           }
 
           var versionsDistance =
-            semverToNum(uv.version) -
+            semverToNum(earliestMatching.version) -
             semverToNum(prev.version);
-
-          var isCompatible =
-                prev.earliestCompatibleVersion === uv.earliestCompatibleVersion;
-            semver.gte(prev.version, uv.earliestCompatibleVersion) ||
-            semver.gte(uv.version, prev.earliestCompatibleVersion);
-
-          if (! isCompatible || versionsDistance < 0) {
+          if (versionsDistance < 0) {
             cost[VMAJOR]++;
             return;
           }
@@ -463,16 +454,10 @@ ConstraintSolver.PackagesResolver.prototype._getResolverOptions =
           cost[MAJOR] += versionsDistance;
         } else {
           var versions = self.resolver.unitsVersions[dep];
-          var latestMatching =
-            constraints.latestMatchingVersionFor(dep, self.resolver);
-
-          if (! latestMatching) {
-            cost[MEDIUM] = Infinity;
-            return;
-          }
+          var latestMatching = mori.last(alternatives);
 
           var latestDistance =
-            semverToNum(self.resolver._latestVersion[dep]) -
+            semverToNum(_.last(self.resolver.unitsVersions[dep]).version) -
             semverToNum(latestMatching.version);
 
           cost[MEDIUM] += latestDistance;

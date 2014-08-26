@@ -20,7 +20,7 @@ selftest.define("springboard", ['checkout', 'net'], function () {
   var run;
 
   var toolsPackage;
-  selftest.captureAndThrow(function() {
+  selftest.doOrThrow(function() {
       toolsPackage = selftest.getToolsPackage();
   });
   var toolsVersion = toolsPackage.name + '@' +
@@ -28,13 +28,13 @@ selftest.define("springboard", ['checkout', 'net'], function () {
 
   // If run not in an app dir, runs the latest version ...
   run = s.run("--long-version");
-  run.read('METEOR-CORE@v2\n' + toolsVersion + '\n');
+  run.read('METEOR@v2\n' + toolsVersion + '\n');
   run.expectEnd();
   run.expectExit(0);
 
   // ... unless you asked for a different one.
-  run = s.run("--long-version", "--release", "METEOR-CORE@v1");
-  run.read('METEOR-CORE@v1\n' + toolsVersion + '\n');
+  run = s.run("--long-version", "--release", "METEOR@v1");
+  run.read('METEOR@v1\n' + toolsVersion + '\n');
   run.expectEnd();
   run.expectExit(0);
 
@@ -44,15 +44,15 @@ selftest.define("springboard", ['checkout', 'net'], function () {
   run.expectExit(0);
   s.cd('myapp', function () {
     run = s.run("--long-version");
-    run.read('METEOR-CORE@v2\n' + toolsVersion + '\n');
+    run.read('METEOR@v2\n' + toolsVersion + '\n');
     run.expectExit(0);
   });
 
   // ... unless you asked for a different one.
-  run = s.run("create", "myapp2", "--release", "METEOR-CORE@v1").expectExit(0);
+  run = s.run("create", "myapp2", "--release", "METEOR@v1").expectExit(0);
   s.cd('myapp2', function () {
     run = s.run("--long-version");
-    run.read('METEOR-CORE@v1\n' + toolsVersion + '\n');
+    run.read('METEOR@v1\n' + toolsVersion + '\n');
     run.expectExit(0);
   });
 
@@ -125,7 +125,7 @@ selftest.define("springboard", ['checkout', 'net'], function () {
 // hackhackhack. If we clean up the hackhackhackhack, then this does not need
 // the internets. (Or, to be more specific: our warehouse code tries to fetch
 // the packages from the internet. If we could fool it into using local packages
-// instead, or think that it alreayd has the packages, it would be ok).
+// instead, or think that it already has the packages, it would be ok).
 selftest.define("writing versions file", ['checkout', 'net'], function () {
   var s = new Sandbox({
     warehouse: {
@@ -136,8 +136,8 @@ selftest.define("writing versions file", ['checkout', 'net'], function () {
   var run;
 
   var toolsPackage;
-  selftest.captureAndThrow(function() {
-      toolsPackage = selftest.getToolsPackage();
+  selftest.doOrThrow(function() {
+    toolsPackage = selftest.getToolsPackage();
   });
   var toolsVersion = toolsPackage.name + '@' +
         toolsPackage.version;
@@ -148,15 +148,13 @@ selftest.define("writing versions file", ['checkout', 'net'], function () {
   run.expectExit(0);
   s.cd('myapp');
   run = s.run("--long-version");
-  run.read('METEOR-CORE@v2\n' + toolsVersion + '\n');
+  run.read('METEOR@v2\n' + toolsVersion + '\n');
   run.expectExit(0);
 
   // Check the contents of the versions file.
   var versions = s.read('.meteor/versions');
   if (!versions) {
-    selftest.expectEqual(
-        "Versions file NOT written in new app.",
-        "Versions file written in new app.");
+    selftest.fail("Versions file NOT written in new app.");
   }
 
   // Remove the versions file.
@@ -167,9 +165,7 @@ selftest.define("writing versions file", ['checkout', 'net'], function () {
   run.expectExit(0);
   versions = s.read('.meteor/versions');
   if (versions) {
-    selftest.expectEqual(
-        "Versions file written with --release.",
-        "Versions file NOT written with --release.");
+    selftest.fail("Versions file written with --release.");
   }
 
   // Update with --release.
@@ -179,9 +175,7 @@ selftest.define("writing versions file", ['checkout', 'net'], function () {
   // version file should exist.
   versions = s.read('.meteor/versions');
   if (!versions) {
-    selftest.expectEqual(
-        "Versions file NOT written after update",
-        "Versions file written after update.");
+    selftest.fail("Versions file NOT written after update");
   }
 
 });

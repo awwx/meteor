@@ -30,19 +30,16 @@ var autoupdateVersionRefreshable =
 
 // The collection of acceptable client versions.
 ClientVersions = new Meteor.Collection("meteor_autoupdate_clientVersions");
-ClientVersionsRefreshable =
-  new Meteor.Collection("meteor_autoupdate_clientVersions_refreshable");
 
 Autoupdate = {};
 
 Autoupdate.newClientAvailable = function () {
-  return !! ClientVersions.findOne(
-    {  current: true,
-       _id: {$ne: autoupdateVersion}
-    }) || !! ClientVersionsRefreshable.findOne(
-    {  current: true,
-       _id: {$ne: autoupdateVersionRefreshable}
-    });
+  return !! ClientVersions.findOne({
+               _id: "version",
+               version: {$ne: autoupdateVersion} }) ||
+         !! ClientVersions.findOne({
+               _id: "version-refreshable",
+               version: {$ne: autoupdateVersionRefreshable} });
 };
 
 var knownToSupportCssOnLoad = false;
@@ -79,73 +76,70 @@ Autoupdate._retrySubscription = function () {
     },
     onReady: function () {
       if (Package.reload) {
-        var handle = ClientVersions.find().observeChanges({
-          added: function (id, fields) {
-            var self = this;
-            if (id !== autoupdateVersion) {
-              if (handle) {
-                handle.stop();
-                Package.reload.Reload._reload();
+        var checkNewVersionDocument = function (id, fields) {
+          var self = this;
+          if (id === 'version-refreshable' &&
+              fields.version !== autoupdateVersionRefreshable) {
+            autoupdateVersionRefreshable = fields.version;
+            // Switch out old css links for the new css links. Inspired by:
+            // https://github.com/guard/guard-livereload/blob/master/js/livereload.js#L710
+            var newCss = fields.assets.allCss;
+            var oldLinks = [];
+            _.each(document.getElementsByTagName('link'), function (link) {
+              if (link.className === '__meteor-css__') {
+                oldLinks.push(link);
               }
-            }
-          }
-        });
+            });
 
-        ClientVersionsRefreshable.find().observeChanges({
-          added: function (id, fields) {
-            if (id !== autoupdateVersionRefreshable) {
-              autoupdateVersionRefreshable = id;
+            var waitUntilCssLoads = function  (link, callback) {
+              var executeCallback = _.once(callback);
+              link.onload = function () {
+                knownToSupportCssOnLoad = true;
+                executeCallback();
+              };
+              if (! knownToSupportCssOnLoad) {
+                var id = Meteor.setInterval(function () {
+                  if (link.sheet) {
+                    executeCallback();
+                    Meteor.clearInterval(id);
+                  }
+                }, 50);
+              }
+            };
 
-              // Switch out old css links for the new css links. Inspired by:
-              // https://github.com/guard/guard-livereload/blob/master/js/livereload.js#L710
-              var newCss = fields.assets.allCss;
-              var oldLinks = [];
-              _.each(document.getElementsByTagName('link'), function (link) {
-                if (link.className === '__meteor-css__') {
-                  oldLinks.push(link);
-                }
+            var attachStylesheetLink = function (newLink) {
+              var removeOldLinks = _.after(newCss.length, function () {
+                _.each(oldLinks, function (oldLink) {
+                  oldLink.parentNode.removeChild(oldLink);
+                });
               });
 
-              var waitUntilCssLoads = function  (link, callback) {
-                var executeCallback = _.once(callback);
-                link.onload = function () {
-                  knownToSupportCssOnLoad = true;
-                  executeCallback();
-                };
-                if (! knownToSupportCssOnLoad) {
-                  var id = Meteor.setInterval(function () {
-                    if (link.sheet) {
-                      executeCallback();
-                      Meteor.clearInterval(id);
-                    }
-                  }, 50);
-                }
-              };
+              document.getElementsByTagName("head").item(0).appendChild(newLink);
 
-              var attachStylesheetLink = function (newLink) {
-                var removeOldLinks = _.after(newCss.length, function () {
-                  _.each(oldLinks, function (oldLink) {
-                    oldLink.parentNode.removeChild(oldLink);
-                  });
-                });
-
-                document.getElementsByTagName("head").item(0).appendChild(newLink);
-
-                waitUntilCssLoads(newLink, function () {
-                  Meteor.setTimeout(removeOldLinks, 200);
-                });
-              };
-
-              _.each(newCss, function (css) {
-                var newLink = document.createElement("link");
-                newLink.setAttribute("rel", "stylesheet");
-                newLink.setAttribute("type", "text/css");
-                newLink.setAttribute("class", "__meteor-css__");
-                newLink.setAttribute("href", css.url);
-                attachStylesheetLink(newLink);
+              waitUntilCssLoads(newLink, function () {
+                Meteor.setTimeout(removeOldLinks, 200);
               });
-            }
+            };
+
+            _.each(newCss, function (css) {
+              var newLink = document.createElement("link");
+              newLink.setAttribute("rel", "stylesheet");
+              newLink.setAttribute("type", "text/css");
+              newLink.setAttribute("class", "__meteor-css__");
+              newLink.setAttribute("href", css.url);
+              attachStylesheetLink(newLink);
+            });
           }
+          else if (id === 'version' &&
+                   fields.version !== autoupdateVersion && handle) {
+            handle.stop();
+            Package.reload.Reload._reload();
+          }
+        };
+
+        var handle = ClientVersions.find().observeChanges({
+          added: checkNewVersionDocument,
+          changed: checkNewVersionDocument
         });
       }
     }

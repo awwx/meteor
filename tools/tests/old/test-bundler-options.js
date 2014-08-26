@@ -21,17 +21,32 @@ var tmpDir = function () {
 var setAppDir = function (appDir) {
   project.project.setRootDir(appDir);
 
-  var localPackageDirs = [path.join(appDir, 'packages')];
-  if (!files.usesWarehouse()) {
-    // Running from a checkout, so use the Meteor core packages from
-    // the checkout.
-    localPackageDirs.push(path.join(
-      files.getCurrentToolsDir(), 'packages'));
+  if (files.usesWarehouse()) {
+    throw Error("This old test doesn't support non-checkout");
   }
+  var appPackageDir = path.join(appDir, 'packages');
+  var checkoutPackageDir = path.join(
+    files.getCurrentToolsDir(), 'packages');
 
-  catalog.complete.initialize({
-    localPackageDirs: localPackageDirs
+  doOrThrow(function () {
+    catalog.uniload.initialize({
+      localPackageDirs: [checkoutPackageDir]
+    });
+    catalog.complete.initialize({
+      localPackageDirs: [appPackageDir, checkoutPackageDir]
+    });
   });
+};
+
+var doOrThrow = function (f) {
+  var ret;
+  var messages = buildmessage.capture(function () {
+    ret = f();
+  });
+  if (messages.hasMessages()) {
+    throw Error(messages.formatMessages());
+  }
+  return ret;
 };
 
 var runTest = function () {
@@ -143,7 +158,9 @@ var runTest = function () {
 
 var Fiber = require('fibers');
 Fiber(function () {
-  release._setCurrentForOldTest();
+  doOrThrow(function () {
+    release._setCurrentForOldTest();
+  });
 
   try {
     runTest();

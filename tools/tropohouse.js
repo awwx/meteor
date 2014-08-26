@@ -51,7 +51,7 @@ _.extend(exports.Tropohouse.prototype, {
   // Returns null if the package name is lexographically invalid.
   packagePath: function (packageName, version, relative) {
     var self = this;
-    if (! utils.validPackageName(packageName)) {
+    if (! utils.isValidPackageName(packageName)) {
       return null;
     }
 
@@ -98,6 +98,14 @@ _.extend(exports.Tropohouse.prototype, {
 
     _.each(packages, function (package) {
       var packageDir = path.join(packageRootDir, package);
+      try {
+        var versions = fs.readdirSync(packageDir);
+      } catch (e) {
+        // Somebody put a file in here or something? Whatever, ignore.
+        if (e.code === 'ENOENT' || e.code === 'ENOTDIR')
+          return;
+        throw e;
+      }
       _.each(fs.readdirSync(packageDir), function (version) {
         // Is this a pre-0.9.0 "warehouse" version with a hash name?
         if (/^[a-f0-9]{3,}$/.test(version))
@@ -163,7 +171,9 @@ _.extend(exports.Tropohouse.prototype, {
     // If this package isn't coming from the package server (loaded from a
     // checkout, or from an app package directory), don't try to download it (we
     // already have it)
-    if (self.catalog.isLocalPackage(packageName))
+    // (In the special case of springboarding, we avoid using self.catalog
+    // here because it is catalog.complete and is not yet initialized.)
+    if (!options.definitelyNotLocal && self.catalog.isLocalPackage(packageName))
       return;
 
     // Figure out what arches (if any) we have loaded for this package version
@@ -204,11 +214,17 @@ _.extend(exports.Tropohouse.prototype, {
       return;
     }
 
-    var buildsToDownload = self.catalog.getBuildsForArches(
+    // Since we are downloading from the server (and we've already done the
+    // local package check), we can use the official catalog here. (This is
+    // important, since springboarding calls this function before the complete
+    // catalog is ready!)
+    var buildsToDownload = catalog.official.getBuildsForArches(
       packageName, version, archesToDownload);
     if (! buildsToDownload) {
-      throw new Error(
+      var e = new Error(
         "No compatible build found for " + packageName + "@" + version);
+      e.noCompatibleBuildError = true;
+      throw e;
     }
 
     // XXX replace with a real progress bar in downloadMissingPackages
@@ -267,6 +283,10 @@ _.extend(exports.Tropohouse.prototype, {
   // that will run on this system (or the requested architecture). Return the
   // object with mapping packageName to version for the packages that we have
   // successfully downloaded.
+  //
+  // XXX This function's error handling capabilities are poor. It's supposed to
+  // return a data structure that its callers check, but most of its callers
+  // don't check it. Bleah.  Should rewrite this and all of its callers.
   downloadMissingPackages: function (versionMap, options) {
     var self = this;
     buildmessage.assertInCapture();
@@ -282,11 +302,12 @@ _.extend(exports.Tropohouse.prototype, {
         });
         downloadedPackages[name] = version;
       } catch (err) {
-        // We have failed to download the right things and put them on disk!
-        // This should not happen, and we aren't sure why it happened.
-        // XXX plenty of reasons why this might happen!  eg, no network.
-        //     better error handling here!
-        console.log(err);
+        if (!(err.noCompatibleBuildError))
+          throw err;
+        console.log(err.message);
+        // continue, which is weird, but we want to avoid a stack trace...
+        // the caller is supposed to check the size of the return value,
+        // although many callers do not.
       }
     });
     return downloadedPackages;

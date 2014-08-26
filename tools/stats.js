@@ -10,6 +10,7 @@ var auth = require("./auth.js");
 var ServiceConnection = require("./service-connection.js");
 var release = require("./release.js");
 var buildmessage = require("./buildmessage.js");
+var httpHelpers = require("./http-helpers.js");
 
 // The name of the package that you add to your app to opt out of
 // sending stats.
@@ -56,7 +57,10 @@ var packageList = function (_currentProjectForTest) {
   );
 };
 
-var recordPackages = function () {
+// 'what' should be one of "sdk.bundle", "sdk.deploy", "sdk.run".
+// If it's a deploy, 'site' should be the name of the site
+// ("foo.meteor.com") that we're deploying to.
+var recordPackages = function (what, site) {
   buildmessage.assertInCapture();
   // Before doing anything, look at the app's dependencies to see if the
   // opt-out package is there; if present, we don't record any stats.
@@ -75,21 +79,12 @@ var recordPackages = function () {
   // This also gives it its own buildmessage state.
   Fiber(function () {
 
-    var userAgentInfo = {
-      hostname: os.hostname(),
-      osPlatform: os.platform(),
-      osType: os.type(),
-      osRelease: os.release(),
-      osArch: os.arch(),
-      sessionId: auth.getSessionId(config.getAccountsDomain())
+    var details = {
+      what: what,
+      userAgent: httpHelpers.getUserAgent(),
+      sessionId: auth.getSessionId(config.getAccountsDomain()),
+      site: site
     };
-
-    if (! release.current.isCheckout()) {
-      userAgentInfo.meteorReleaseTrack = release.current.getReleaseTrack();
-      userAgentInfo.meteorReleaseVersion = release.current.getReleaseVersion();
-      userAgentInfo.meteorToolsPackageWithVersion =
-        release.current.getToolsPackageAtVersion();
-    }
 
     try {
       var conn = connectToPackagesStatsServer();
@@ -112,10 +107,16 @@ var recordPackages = function () {
         }
       }
 
-      conn.call("recordAppPackages",
-                project.project.getAppIdentifier(),
-                packages,
-                userAgentInfo);
+      var result = conn.call("recordAppPackages",
+                             project.project.getAppIdentifier(),
+                             packages,
+                             details);
+
+      // If the stats server sent us a new session, save it for use on
+      // subsequent requests.
+      if (result && result.newSessionId) {
+        auth.setSessionId(config.getAccountsDomain(), result.newSessionId);
+      }
 
       if (process.env.METEOR_PACKAGE_STATS_TEST_OUTPUT) {
         // Print some output for the 'report-stats' self-test.
@@ -126,6 +127,8 @@ var recordPackages = function () {
       // Do nothing. A failure to record package stats shouldn't be
       // visible to the end user and shouldn't affect whatever command
       // they are running.
+    } finally {
+      conn && conn.close();
     }
   }).run();
 };
@@ -133,6 +136,7 @@ var recordPackages = function () {
 var logErrorIfInCheckout = function (err) {
   if (files.inCheckout()) {
     process.stderr.write("Failed to record package usage.\n");
+    process.stderr.write("(This error is hidden when you are not running Meteor from a checkout.)\n");
     process.stderr.write(err.stack || err);
     process.stderr.write("\n\n");
   }
@@ -141,9 +145,20 @@ var logErrorIfInCheckout = function (err) {
 // Used in a test (and can only be used against the testing packages
 // server) to fetch one package stats entry for a given application.
 var getPackagesForAppIdInTest = function (currentProject) {
-  return connectToPackagesStatsServer().call(
-    "getPackagesForAppId",
-    currentProject.getAppIdentifier());
+  var conn = connectToPackagesStatsServer();
+  var result;
+  try {
+    result = conn.call(
+      "getPackagesForAppId",
+      currentProject.getAppIdentifier());
+    if (result && result.details) {
+      result.details.packages = _.sortBy(result.details.packages, "name");
+    }
+  } finally {
+    conn.close();
+  }
+
+  return result;
 };
 
 var connectToPackagesStatsServer = function () {

@@ -9,6 +9,7 @@ var uniload = require('../../uniload.js');
 var release = require('../../release.js');
 var project = require('../../project.js');
 var catalog = require('../../catalog.js');
+var buildmessage = require('../../buildmessage.js');
 
 var appWithPublic = path.join(__dirname, 'app-with-public');
 var appWithPrivate = path.join(__dirname, 'app-with-private');
@@ -21,17 +22,32 @@ var tmpDir = function () {
 var setAppDir = function (appDir) {
   project.project.setRootDir(appDir);
 
-  var localPackageDirs = [path.join(appDir, 'packages')];
-  if (!files.usesWarehouse()) {
-    // Running from a checkout, so use the Meteor core packages from
-    // the checkout.
-    localPackageDirs.push(path.join(
-      files.getCurrentToolsDir(), 'packages'));
+  if (files.usesWarehouse()) {
+    throw Error("This old test doesn't support non-checkout");
   }
+  var appPackageDir = path.join(appDir, 'packages');
+  var checkoutPackageDir = path.join(
+    files.getCurrentToolsDir(), 'packages');
 
-  catalog.complete.initialize({
-    localPackageDirs: localPackageDirs
+  doOrThrow(function () {
+    catalog.uniload.initialize({
+      localPackageDirs: [checkoutPackageDir]
+    });
+    catalog.complete.initialize({
+      localPackageDirs: [appPackageDir, checkoutPackageDir]
+    });
   });
+};
+
+var doOrThrow = function (f) {
+  var ret;
+  var messages = buildmessage.capture(function () {
+    ret = f();
+  });
+  if (messages.hasMessages()) {
+    throw Error(messages.formatMessages());
+  }
+  return ret;
 };
 
 // These tests make some assumptions about the structure of stars: that there
@@ -130,20 +146,13 @@ var runTest = function () {
     });
     assert.strictEqual(fut.wait(), 0);
   });
-
-  console.log("Use Assets API from unipackage");
-  assert.doesNotThrow(function () {
-    var testPackage = uniload.load({
-      library: release.current.library,
-      packages: ['test-package']
-    })['test-package'].TestAsset;
-    testPackage.go(false /* don't exit when done */);
-  });
 };
 
 var Fiber = require('fibers');
 Fiber(function () {
-  release._setCurrentForOldTest();
+  doOrThrow(function () {
+    release._setCurrentForOldTest();
+  });
 
   try {
     runTest();

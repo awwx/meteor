@@ -1,7 +1,6 @@
 var fs = require('fs');
 var path = require('path');
 var _ = require('underscore');
-var packageCache = require('./package-cache.js');
 var catalog = require('./catalog.js');
 var utils = require('./utils.js');
 var buildmessage = require('./buildmessage.js');
@@ -11,14 +10,24 @@ var tropohouse = require('./tropohouse.js');
 // options:
 //  - versions: a map from package name to the version to use.  or null to only
 //    use local packages and ignore the package versions.
-//  - uniloadDir: if specified, versions should be null, and this loader will
-//    *only* load packages that are already unipackages and are in this
-//    directory
 exports.PackageLoader = function (options) {
   var self = this;
-  self.versions = options.versions || null;
+  if (!options.catalog)
+    throw Error("Must specify a catalog");
+
+  self.versions = null;
+  // Ignore specified versions if we're doing this as part of uniload.
+  // The PackageLoader created in uniload.js will not specify a versions option,
+  // but other PackageLoaders (eg, created to build plugins in compiler.compile)
+  // might, but we should ignore that since uniload never loads versioned
+  // packages; it only loads precompiled packages (for built releases) or local
+  //packages (from checkout).
+  if (options.versions && options.catalog !== catalog.uniload)
+    self.versions = options.versions;
+
   self.uniloadDir = options.uniloadDir;
   self.constraintSolverOpts = options.constraintSolverOpts;
+  self.catalog = options.catalog;
 };
 
 _.extend(exports.PackageLoader.prototype, {
@@ -54,30 +63,8 @@ _.extend(exports.PackageLoader.prototype, {
       return pkg;
     }
 
-    return packageCache.packageCache.loadPackageAtPath(
+    return self.catalog.packageCache.loadPackageAtPath(
       name, loadPath, self.constraintSolverOpts);
-  },
-
-  containsPlugins: function (name) {
-    var self = this;
-
-    // We don't want to ever look at the catalog in the uniload case. We
-    // shouldn't ever care about plugins anyway, since uniload should never
-    // compile real packages from source (it sorta compiles the wrapper "load"
-    // package, which should avoid calling this function).
-    if (self.uniloadDir)
-      throw Error("called containsPlugins for uniload?");
-
-    var versionRecord;
-    if (self.versions === null) {
-      versionRecord = catalog.complete.getLatestVersion(name);
-    } else if (_.has(self.versions, name)) {
-      versionRecord = catalog.complete.getVersion(name, self.versions[name]);
-    } else {
-      throw new Error("no version specified for package " + name);
-    }
-
-    return versionRecord.containsPlugins;
   },
 
   // As getPackage, but returns the path of the package that would be
@@ -92,14 +79,6 @@ _.extend(exports.PackageLoader.prototype, {
     var self = this;
     buildmessage.assertInCapture();
 
-    if (self.uniloadDir) {
-      var packagePath = path.join(self.uniloadDir, name);
-      if (!fs.existsSync(path.join(packagePath, 'unipackage.json'))) {
-        return null;
-      }
-      return packagePath;
-    }
-
     if (self.versions && ! _.has(self.versions, name)) {
       throw new Error("no version chosen for package " + name + "?");
     }
@@ -111,9 +90,8 @@ _.extend(exports.PackageLoader.prototype, {
       version = null;
     }
 
-    return catalog.complete.getLoadPathForPackage(name,
-      version,
-      self.constraintSolverOpts);
+    return self.catalog.getLoadPathForPackage(
+      name, version, self.constraintSolverOpts);
   },
 
   // Given a package name like "ddp" and an architecture, get the unibuild of
@@ -131,6 +109,9 @@ _.extend(exports.PackageLoader.prototype, {
     options = options || {};
     // We can only download packages if we know what versions they are.
     if (!self.versions)
+      return;
+    // We shouldn't ever download packages for uniload.
+    if (self.catalog === catalog.uniload)
       return;
     tropohouse.default.downloadMissingPackages(self.versions, {
       serverArch: options.serverArch

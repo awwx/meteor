@@ -9,6 +9,7 @@ var bundler = require('../../bundler.js');
 var release = require('../../release.js');
 var project = require('../../project.js');
 var catalog = require('../../catalog.js');
+var buildmessage = require('../../buildmessage.js');
 var meteorNpm = require('../../meteor-npm.js');
 
 var lastTmpDir = null;
@@ -19,17 +20,33 @@ var tmpDir = function () {
 var setAppDir = function (appDir) {
   project.project.setRootDir(appDir);
 
-  var localPackageDirs = [tmpPackageDirContainer];
-  if (!files.usesWarehouse()) {
-    // Running from a checkout, so use the Meteor core packages from
-    // the checkout.
-    localPackageDirs.push(path.join(
-      files.getCurrentToolsDir(), 'packages'));
+  var checkoutPackageDir = path.join(
+    files.getCurrentToolsDir(), 'packages');
+  var localPackageDirs = [tmpPackageDirContainer, checkoutPackageDir];
+
+  if (files.usesWarehouse()) {
+    throw Error("This old test doesn't support non-checkout");
   }
 
-  catalog.complete.initialize({
-    localPackageDirs: localPackageDirs
+  doOrThrow(function () {
+    catalog.uniload.initialize({
+      localPackageDirs: [checkoutPackageDir]
+    });
+    catalog.complete.initialize({
+      localPackageDirs: localPackageDirs
+    });
   });
+};
+
+var doOrThrow = function (f) {
+  var ret;
+  var messages = buildmessage.capture(function () {
+    ret = f();
+  });
+  if (messages.hasMessages()) {
+    throw Error(messages.formatMessages());
+  }
+  return ret;
 };
 
 ///
@@ -39,7 +56,9 @@ var tmpPackageDirContainer = tmpDir();
 var testPackageDir = path.join(tmpPackageDirContainer, 'test-package');
 
 var reloadPackages = function () {
-  catalog.complete.refresh();
+  doOrThrow(function () {
+    catalog.complete.refresh();
+  });
 };
 
 var updateTestPackage = function (npmDependencies) {
@@ -383,7 +402,9 @@ var runTest = function () {
 var Fiber = require('fibers');
 Fiber(function () {
   setAppDir(appWithPackageDir);
-  release._setCurrentForOldTest();
+  doOrThrow(function () {
+    release._setCurrentForOldTest();
+  });
   meteorNpm._printNpmCalls = true;
 
   try {

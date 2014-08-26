@@ -4,8 +4,6 @@ var semver = require('semver');
 var _ = require('underscore');
 var packageClient = require('./package-client.js');
 var archinfo = require('./archinfo.js');
-var packageCache = require('./package-cache.js');
-var PackageSource = require('./package-source.js');
 var Unipackage = require('./unipackage.js').Unipackage;
 var compiler = require('./compiler.js');
 var buildmessage = require('./buildmessage.js');
@@ -31,11 +29,6 @@ baseCatalog.BaseCatalog = function () {
   self.packages = null;
   self.versions = null;  // package name -> version -> object
   self.builds = null;
-  self.releaseTracks = null;
-  self.releaseVersions = null;
-
-  // XXX "Meteor-Core"? decide this pre 0.9.0.
-  self.DEFAULT_TRACK = 'METEOR-CORE';
 
   // We use the initialization design pattern because it makes it easier to use
   // both of our catalogs as singletons.
@@ -54,8 +47,6 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
     self.packages = [];
     self.versions = {};
     self.builds = [];
-    self.releaseTracks = [];
-    self.releaseVersions = [];
   },
 
   // Throw if the catalog's self.initialized value has not been set to true.
@@ -79,7 +70,7 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
       return;
 
     _.each(
-      ['packages', 'builds', 'releaseTracks', 'releaseVersions'],
+      ['packages', 'builds'],
       function (field) {
         self[field].push.apply(self[field], collections[field]);
       });
@@ -105,9 +96,10 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
   // the inevitable rather than slowing down normal operations)
   _recordOrRefresh: function (recordFinder) {
     var self = this;
+    buildmessage.assertInCapture();
     var record = recordFinder();
     // If we cannot find it maybe refresh.
-    if (!record) {
+    if (!record && self._refreshingIsProductive()) {
       if (! catalog.official.refreshInProgress()) {
         catalog.official.refresh();
       }
@@ -120,57 +112,9 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
     return record;
   },
 
-  // Returns general (non-version-specific) information about a
-  // release track, or null if there is no such release track.
-  getReleaseTrack: function (name) {
-    var self = this;
-    self._requireInitialized();
-    return self._recordOrRefresh(function () {
-      return _.findWhere(self.releaseTracks, { name: name });
-    });
-  },
-
-  // Return information about a particular release version, or null if such
-  // release version does not exist.
-  //
-  // XXX: notInitialized : don't require initialization. This is not the right thing
-  // to do long term, but it is the easiest way to deal with versionFrom without
-  // serious refactoring.
-  getReleaseVersion: function (track, version, notInitialized) {
-    var self = this;
-    if (!notInitialized) self._requireInitialized();
-    return self._recordOrRefresh(function () {
-      return _.findWhere(self.releaseVersions,
-                         { track: track,  version: version });
-    });
-  },
-
-  // Return an array with the names of all of the release tracks that we know
-  // about, in no particular order.
-  getAllReleaseTracks: function () {
-    var self = this;
-    self._requireInitialized();
-    return _.pluck(self.releaseTracks, 'name');
-  },
-
-  // Given a release track, return all recommended versions for this track, sorted
-  // by their orderKey. Returns the empty array if the release track does not
-  // exist or does not have any recommended versions.
-  getSortedRecommendedReleaseVersions: function (track, laterThanOrderKey) {
-    var self = this;
-    self._requireInitialized();
-
-    var recommended = _.filter(self.releaseVersions, function (v) {
-      if (v.track !== track || !v.recommended)
-        return false;
-      return !laterThanOrderKey || v.orderKey > laterThanOrderKey;
-    });
-
-    var recSort = _.sortBy(recommended, function (rec) {
-      return rec.orderKey;
-    });
-    recSort.reverse();
-    return _.pluck(recSort, "version");
+  _refreshingIsProductive: function () {
+    // Refreshing is productive for catalog.official and catalog.complete only.
+    return false;
   },
 
   // Return an array with the names of all of the packages that we
@@ -184,12 +128,17 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
 
   // Returns general (non-version-specific) information about a
   // package, or null if there is no such package.
-  getPackage: function (name) {
+  getPackage: function (name, options) {
     var self = this;
+    buildmessage.assertInCapture();
     self._requireInitialized();
-    return self._recordOrRefresh(function () {
+    options = options || {};
+
+    var get = function () {
       return _.findWhere(self.packages, { name: name });
-    });
+    };
+
+    return options.noRefresh ? get() : self._recordOrRefresh(get);
   },
 
   // Given a package, returns an array of the versions available for
@@ -213,6 +162,7 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
   getVersion: function (name, version) {
     var self = this;
     self._requireInitialized();
+    buildmessage.assertInCapture();
 
     var lookupVersion = function () {
       return _.has(self.versions, name) &&
@@ -250,6 +200,7 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
   getLatestVersion: function (name) {
     var self = this;
     self._requireInitialized();
+    buildmessage.assertInCapture();
 
     var versions = self.getSortedVersions(name);
     if (versions.length === 0)
@@ -263,6 +214,7 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
   getBuildsForArches: function (name, version, arches) {
     var self = this;
     self._requireInitialized();
+    buildmessage.assertInCapture();
 
     var versionInfo = self.getVersion(name, version);
     if (! versionInfo)
@@ -272,24 +224,30 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
     //     so in practice we don't really support "maybe-platform-specific"
     //     packages
 
-    var allBuilds = _.where(self.builds, { versionId: versionInfo._id });
-    var solution = null;
-    utils.generateSubsetsOfIncreasingSize(allBuilds, function (buildSubset) {
-      // This build subset works if for all the arches we need, at least one
-      // build in the subset satisfies it. It is guaranteed to be minimal,
-      // because we look at subsets in increasing order of size.
-      var satisfied = _.all(arches, function (neededArch) {
-        return _.any(buildSubset, function (build) {
-          var buildArches = build.buildArchitectures.split('+');
-          return !!archinfo.mostSpecificMatch(neededArch, buildArches);
+    // Even though getVersion already has its own _recordOrRefresh, we need this
+    // one, in case our local cache says "version exists but only for the wrong
+    // arch" and the right arch has been recently published.
+    // XXX should ensure at most one refresh
+    return self._recordOrRefresh(function () {
+      var allBuilds = _.where(self.builds, { versionId: versionInfo._id });
+      var solution = null;
+      utils.generateSubsetsOfIncreasingSize(allBuilds, function (buildSubset) {
+        // This build subset works if for all the arches we need, at least one
+        // build in the subset satisfies it. It is guaranteed to be minimal,
+        // because we look at subsets in increasing order of size.
+        var satisfied = _.all(arches, function (neededArch) {
+          return _.any(buildSubset, function (build) {
+            var buildArches = build.buildArchitectures.split('+');
+            return !!archinfo.mostSpecificMatch(neededArch, buildArches);
+          });
         });
+        if (satisfied) {
+          solution = buildSubset;
+          return true;  // stop the iteration
+        }
       });
-      if (satisfied) {
-        solution = buildSubset;
-        return true;  // stop the iteration
-      }
+      return solution;  // might be null!
     });
-    return solution;  // might be null!
   },
 
   // Unlike the previous, this looks for a build which *precisely* matches the
@@ -298,6 +256,7 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
   getBuildWithPreciseBuildArchitectures: function (versionRecord,
                                                    buildArchitectures) {
     var self = this;
+    buildmessage.assertInCapture();
     self._requireInitialized();
 
     return self._recordOrRefresh(function () {
@@ -310,33 +269,13 @@ _.extend(baseCatalog.BaseCatalog.prototype, {
   getAllBuilds: function (name, version) {
     var self = this;
     self._requireInitialized();
+    buildmessage.assertInCapture();
 
     var versionRecord = self.getVersion(name, version);
     if (!versionRecord)
       return null;
 
     return _.where(self.builds, { versionId: versionRecord._id });
-  },
-
-  // Returns the default release version: the latest recommended version on the
-  // default track. Returns null if no such thing exists (even after syncing
-  // with the server, which it only does if there is no eligible release
-  // version).
-  getDefaultReleaseVersion: function (track) {
-    var self = this;
-    self._requireInitialized();
-
-    if (!track)
-      track = self.DEFAULT_TRACK;
-
-    var getDef = function () {
-      var versions = self.getSortedRecommendedReleaseVersions(track);
-      if (!versions.length)
-        return null;
-      return {track: track, version: versions[0]};
-    };
-
-    return self._recordOrRefresh(getDef);
   },
 
   // Reload catalog data to account for new information if needed.
