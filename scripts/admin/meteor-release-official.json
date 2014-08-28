@@ -1,7 +1,8 @@
 {
- "track": "METEOR",
- "version": "0.9.0",
- "recommended": false,
- "official": true,
- "description": "Meteor release, supported by MDG."
+    "track": "METEOR",
+    "version": "0.9.0.1",
+    "recommended": false,
+    "official": true,
+    "description": "The official Meteor Distribution",
+    "patchFrom": ["0.9.0"]
 }

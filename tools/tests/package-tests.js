@@ -310,7 +310,7 @@ var publishReleaseInNewTrack = function (s, releaseTrack, tool, packages) {
     packages: packages
   };
   s.write("release.json", JSON.stringify(relConf, null, 2));
-  run = s.run("publish-release", "release.json", "--create-track");
+  var run = s.run("publish-release", "release.json", "--create-track");
   run.waitSecs(15);
   run.match("Done");
   run.expectExit(0);
@@ -417,13 +417,11 @@ var createAndPublishPackage = function (s, packageName) {
   var run = s.run("create", "--package", packageName);
   run.waitSecs(10);
   run.expectExit(0);
-  s.cd(packageName);
-
-  run = s.run("publish", "--create");
-  run.waitSecs(25);
-  run.expectExit(0);
-
-  s.cd("..");
+  s.cd(packageName, function (){
+    run = s.run("publish", "--create");
+    run.waitSecs(25);
+    run.expectExit(0);
+  });
 };
 
 selftest.define("release track defaults to METEOR",
@@ -585,4 +583,137 @@ selftest.define("package with --name", ['test-package-server'], function () {
   run.waitSecs(15);
   run.match("overriding accounts-base!");
   run.stop();
+});
+
+selftest.define("talk to package server with expired or no accounts token", ['net', 'test-package-server'], function () {
+  var s = new Sandbox();
+  testUtils.login(s, "test", "testtest");
+
+  // Revoke our credential by logging out.
+  var session = s.readSessionFile();
+  testUtils.logout(s);
+
+  testUtils.login(s, "testtest", "testtest");
+  var packageName = "testtest:" + utils.randomToken();
+  publishMostBasicPackage(s, packageName);
+  testUtils.logout(s);
+
+  // When we are not logged in, we should get prompted to log in when we
+  // run 'meteor admin maintainers --add'.
+  var run = s.run("admin", "maintainers", packageName,
+                  "--add", "foo");
+  run.waitSecs(15);
+  run.matchErr("Username:");
+  run.write("test\n");
+  run.matchErr("Password:");
+  run.write("testtest\n");
+  run.waitSecs(15);
+  // The 'test' user should not be a maintainer of
+  // standard-app-packages. So this command should fail.
+  run.matchErr("You are not an authorized maintainer");
+  run.expectExit(1);
+
+  // Now restore our previous session, so that we now have an expired
+  // accounts token.
+  s.writeSessionFile(session);
+
+  run = s.run("admin", "maintainers", packageName, "--add", "foo");
+  run.waitSecs(15);
+  run.matchErr("have been logged out");
+  run.matchErr("Please log in");
+  run.matchErr("Username");
+  run.write("test\n");
+  run.matchErr("Password:");
+  run.write("testtest\n");
+  run.waitSecs(15);
+
+  run.matchErr("You are not an authorized maintainer");
+  run.expectExit(1);
+});
+
+// The cwd of 's' should be a package directory (i.e. with a package.js
+// file). Pass 'expectAuthorizationFailure' if you expect the publish
+// command to fail because the currently logged-in user is not an
+// authorized maintainer of the package.
+var changeVersionAndPublish = function (s, expectAuthorizationFailure) {
+  var packageJs = s.read("package.js");
+  // XXX Hack
+  var version = packageJs.match(/version: \"(\d\.\d\.\d)\"/)[1];
+  var versionParts = version.split(".");
+  versionParts[0] = parseInt(versionParts[0]) + 1;
+  packageJs = packageJs.replace(version, versionParts.join("."));
+  s.write("package.js", packageJs);
+
+  var run = s.run("publish");
+  run.waitSecs(30);
+  if (expectAuthorizationFailure) {
+    run.matchErr("not an authorized maintainer");
+    // XXX Why is this 3? Other unauthorized errors (e.g. maintainers
+    // --add when you are not a maintainer) exit 1
+    run.expectExit(3);
+  } else {
+    run.match("Done");
+    run.expectExit(0);
+  }
+};
+
+selftest.define("packages with organizations", ["net", "test-package-server"], function () {
+  var s = new Sandbox();
+  testUtils.login(s, "test", "testtest");
+
+  var orgName = testUtils.createOrganization("test", "testtest");
+
+  // Publish a package with 'orgName' as the prefix.
+  var packageName = utils.randomToken();
+  var fullPackageName = orgName + ":" + packageName;
+  publishMostBasicPackage(s, fullPackageName);
+  s.cd(fullPackageName);
+
+  // 'test' should be a maintainer, as well as 'testtest', once
+  // 'testtest' is added to the org.
+  changeVersionAndPublish(s);
+  testUtils.login(s, "testtest", "testtest");
+  changeVersionAndPublish(s, true /* expect authorization failure */);
+  testUtils.login(s, "test", "testtest");
+  var run = s.run("admin", "members", orgName, "--add", "testtest");
+  run.waitSecs(15);
+  run.expectExit(0);
+  testUtils.login(s, "testtest", "testtest");
+  changeVersionAndPublish(s);
+
+  // Removing 'orgName' as a maintainer should fail.
+  run = s.run("admin", "maintainers", fullPackageName, "--remove", orgName);
+  run.waitSecs(15);
+  run.matchErr("remove the maintainer in the package prefix");
+  run.expectExit(1);
+
+  // Publish a package with 'test' as the prefix.
+  s.cd("..");
+  testUtils.login(s, "test", "testtest");
+  fullPackageName = "test:" + utils.randomToken();
+  publishMostBasicPackage(s, fullPackageName);
+  s.cd(fullPackageName);
+
+  // Add 'orgName' as a maintainer.
+  run = s.run("admin", "maintainers", fullPackageName, "--add", orgName);
+  run.waitSecs(15);
+  run.match("The maintainers for " + fullPackageName + " are");
+  run.match(orgName);
+  run.expectExit(0);
+
+  // 'testtest' should now be authorized.
+  testUtils.login(s, "testtest", "testtest");
+  changeVersionAndPublish(s);
+
+  // Remove 'orgName' as a maintainer: 'testtest' should no longer be
+  // authorized.
+  testUtils.login(s, "test", "testtest");
+  run = s.run("admin", "maintainers", fullPackageName, "--remove", orgName);
+  run.waitSecs(15);
+  run.match("The maintainers for " + fullPackageName + " are");
+  run.forbid(orgName);
+  run.expectExit(0);
+
+  testUtils.login(s, "testtest", "testtest");
+  changeVersionAndPublish(s, true /* expect authorization failure */);
 });
